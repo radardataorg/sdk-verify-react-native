@@ -1,93 +1,152 @@
-# sdk-verify-react-native
+# RadarData Verify para React Native
 
+Coloca o [RadarData Verify](https://radardata.com.br) dentro do seu app: prova
+de vida, documento e coleta de dados, sem o usuário sair da sua aplicação.
 
-
-## Getting started
-
-To make it easy for you to get started with GitLab, here's a list of recommended next steps.
-
-Already a pro? Just edit this README.md and make it your own. Want to make it easy? [Use the template at the bottom](#editing-this-readme)!
-
-## Add your files
-
-* [Create](https://docs.gitlab.com/user/project/repository/web_editor/#create-a-file) or [upload](https://docs.gitlab.com/user/project/repository/web_editor/#upload-a-file) files
-* [Add files using the command line](https://docs.gitlab.com/topics/git/add_files/#add-files-to-a-git-repository) or push an existing Git repository with the following command:
-
-```
-cd existing_repo
-git remote add origin https://gitlab.com/radardata.com.br/sdk-verify-react-native.git
-git branch -M main
-git push -uf origin main
+```bash
+npm i @radardata/verify-react-native react-native-webview
 ```
 
-## Integrate with your tools
+## Leia isto antes: o que é nativo hoje
 
-* [Set up project integrations](https://gitlab.com/radardata.com.br/sdk-verify-react-native/-/settings/integrations)
+Nesta versão **todos os passos rodam em WebView**, inclusive a prova de vida:
 
-## Collaborate with your team
+| Passo | Como roda |
+|---|---|
+| Prova de vida | **WebView** (a mesma página testada em produção) |
+| Documento | **WebView** |
+| Consentimento, campos, sócio, apontamentos | **WebView** |
 
-* [Invite team members and collaborators](https://docs.gitlab.com/user/project/members/)
-* [Create a new merge request](https://docs.gitlab.com/user/project/merge_requests/creating_merge_requests/)
-* [Automatically close issues from merge requests](https://docs.gitlab.com/user/project/issues/managing_issues/#closing-issues-automatically)
-* [Enable merge request approvals](https://docs.gitlab.com/user/project/merge_requests/approvals/)
-* [Set auto-merge](https://docs.gitlab.com/user/project/merge_requests/auto_merge/)
+O fluxo **funciona de ponta a ponta** em iOS e Android, porque o WebView
+carrega o fluxo de verdade e pede a câmera.
 
-## Test and Deploy
+O caminho nativo está **preparado, não pronto**: existe o contrato
+`ProvedorDeProvaDeVida`, e o servidor já devolve o desafio no
+`POST /liveness/start`. Quando a implementação nativa existir, você passa um
+`provedorDeProvaDeVida` e o passo sai do WebView **sem mudar mais nada no seu
+código**.
 
-Use the built-in continuous integration in GitLab.
+## Uso
 
-* [Get started with GitLab CI/CD](https://docs.gitlab.com/ci/quick_start/)
-* [Analyze your code for known vulnerabilities with Static Application Security Testing (SAST)](https://docs.gitlab.com/user/application_security/sast/)
-* [Deploy to Kubernetes, Amazon EC2, or Amazon ECS using Auto Deploy](https://docs.gitlab.com/topics/autodevops/requirements/)
-* [Use pull-based deployments for improved Kubernetes management](https://docs.gitlab.com/user/clusters/agent/)
-* [Set up protected environments](https://docs.gitlab.com/ci/environments/protected_environments/)
+```tsx
+import { VerifyRadarData } from "@radardata/verify-react-native";
 
-***
+function MinhaVerificacao({ urlDaSessao }: { urlDaSessao: string }) {
+  return (
+    <VerifyRadarData
+      sessao={urlDaSessao}
+      onDesfecho={(d) => {
+        if (d.tipo === "concluido") {
+          console.log(d.estado.resultado); // APROVADO | REPROVADO | REVISAO_MANUAL
+          console.log(d.estado.motivo);    // por que não aprovou, em texto neutro
+        }
+        if (d.tipo === "erro") console.warn(d.erro.message);
+      }}
+    />
+  );
+}
+```
 
-# Editing this README
+## O app não cria a sessão, e isso é de propósito
 
-When you're ready to make this README your own, just edit this file and use the handy template below (or feel free to structure it however you want - this is just a starting point!). Thanks to [makeareadme.com](https://www.makeareadme.com/) for this template.
+A sessão é criada pelo **seu backend**, com o
+[`@radardata/sdk`](https://www.npmjs.com/package/@radardata/sdk) ou o
+[`radardata/sdk-php`](https://packagist.org/packages/radardata/sdk-php), e o
+app recebe só a url (ou o token) dela.
 
-## Suggestions for a good README
+Criar a sessão do app exigiria o **token de API da empresa** dentro do
+aparelho, e token de API em aparelho de usuário final é token vazado: com ele
+dá para gastar o saldo da sua conta. O `VerifyRadarData` aceita tanto a url
+quanto o token, porque quem integra guarda o que recebeu e passa adiante.
 
-Every project is different, so consider which of these sections apply to yours. The sections used in the template are suggestions for most open source projects. Also keep in mind that while a README can be too long and detailed, too long is better than too short. If you think your README is too long, consider utilizing another form of documentation rather than cutting out information.
+```ts
+// No SEU backend
+const sessao = await radar.verify.criarSessao("kyc-cnpj", { cnpj }, { reference_id: pedidoId });
+return { url: sessao.url };   // isto é o que o app recebe
+```
 
-## Name
-Choose a self-explaining name for your project.
+## Permissão de câmera
 
-## Description
-Let people know what your project can do specifically. Provide context and add a link to any reference visitors might be unfamiliar with. A list of Features or a Background subsection can also be added here. If there are alternatives to your project, this is a good place to list differentiating factors.
+O WebView precisa da câmera, e o componente já concede a permissão que a página
+pede. Falta o que só o app pode declarar:
 
-## Badges
-On some READMEs, you may see small images that convey metadata, such as whether or not all the tests are passing for the project. You can use Shields to add some to your README. Many services also have instructions for adding a badge.
+**iOS**, no `Info.plist`:
 
-## Visuals
-Depending on what you are making, it can be a good idea to include screenshots or even a video (you'll frequently see GIFs rather than actual videos). Tools like ttygif can help, but check out Asciinema for a more sophisticated method.
+```xml
+<key>NSCameraUsageDescription</key>
+<string>Para confirmar que é você, com uma selfie.</string>
+```
 
-## Installation
-Within a particular ecosystem, there may be a common way of installing things, such as using Yarn, NuGet, or Homebrew. However, consider the possibility that whoever is reading your README is a novice and would like more guidance. Listing specific steps helps remove ambiguity and gets people to using your project as quickly as possible. If it only runs in a specific context like a particular programming language version or operating system or has dependencies that have to be installed manually, also add a Requirements subsection.
+**Android**, no `AndroidManifest.xml`:
 
-## Usage
-Use examples liberally, and show the expected output if you can. It's helpful to have inline the smallest example of usage that you can demonstrate, while providing links to more sophisticated examples if they are too long to reasonably include in the README.
+```xml
+<uses-permission android:name="android.permission.CAMERA" />
+```
 
-## Support
-Tell people where they can go to for help. It can be any combination of an issue tracker, a chat room, an email address, etc.
+Sem isso o sistema nega a câmera sem dizer por que, e o sintoma aparece como se
+o fluxo estivesse quebrado.
 
-## Roadmap
-If you have ideas for releases in the future, it is a good idea to list them in the README.
+## Como o componente sabe que terminou
 
-## Contributing
-State if you are open to contributions and what your requirements are for accepting them.
+Ele **pergunta ao servidor**, em intervalo, em vez de espiar a navegação do
+WebView. Depender da url de redirecionamento ou de mensagem da página amarraria
+o pacote ao HTML do runtime, que muda sem aviso; o **estado da sessão é
+contrato**.
 
-For people who want to make changes to your project, it's helpful to have some documentation on how to get started. Perhaps there is a script that they should run or some environment variables that they need to set. Make these steps explicit. These instructions could also be useful to your future self.
+Falha de rede no meio do caminho não encerra nada: a pessoa pode estar sem
+sinal, e a rodada seguinte tenta de novo. Ajuste com
+`intervaloDeConferenciaMs` se precisar.
 
-You can also document commands to lint the code or run tests. These steps help to ensure high code quality and reduce the likelihood that the changes inadvertently break something. Having instructions for running tests is especially helpful if it requires external setup, such as starting a Selenium server for testing in a browser.
+## Erros
 
-## Authors and acknowledgment
-Show your appreciation to those who have contributed to the project.
+| Classe | Quando, e o que fazer |
+|---|---|
+| `SessaoInvalida` | expirou, foi cancelada ou nunca existiu. **Não** tente de novo: peça uma sessão nova ao seu backend |
+| `PassoForaDeOrdem` | o passo pedido não é o atual da sessão |
+| `BiometriaIndisponivel` | biometria fora do ar do nosso lado |
+| `FalhaDeRede` | sem resposta: timeout, DNS, sem sinal |
+| `ErroVerify` | raiz de todas, com `.codigo`, `.status` e `.corpo` |
 
-## License
-For open source projects, say how it is licensed.
+## Quem decide a aprovação
 
-## Project status
-If you have run out of energy or time for your project, put a note at the top of the README saying that development has slowed down or stopped completely. Someone may choose to fork your project or volunteer to step in as a maintainer or owner, allowing your project to keep going. You can also make an explicit request for maintainers.
+O **servidor**. O nativo roda o desafio e o `POST /liveness/result` busca o
+resultado e avalia. Um SDK que decidisse no aparelho estaria deixando o usuário
+final aprovar a si mesmo.
+
+## Para quem for escrever a ponte nativa
+
+```ts
+import type { ProvedorDeProvaDeVida } from "@radardata/verify-react-native";
+
+export const meuProvedor: ProvedorDeProvaDeVida = {
+  async disponivel() {
+    return Platform.OS === "ios" || Platform.OS === "android";
+  },
+  async executar(desafio) {
+    // `desafio` é o corpo cru de POST /liveness/start: { session_id, ... }.
+    await MeuModuloNativo.rodarProvaDeVida(desafio.session_id);
+    // Não devolva veredito: quem avalia é o servidor.
+  },
+};
+```
+
+O `Orquestrador` pergunta `disponivel()` antes de usar, e não só o tipo do
+passo: aparelho sem câmera, ou permissão negada, cai no WebView em vez de
+travar.
+
+## Desenvolvimento
+
+```bash
+npm install
+npm test          # testa a orquestração, que é onde vive a regra
+npm run typecheck
+npm run build
+```
+
+Os testes cobrem a decisão (o que é nativo, o que é WebView, em que ordem a
+prova de vida acontece) e não o componente de tela, que precisa de React Native
+em execução.
+
+## Licença
+
+MIT.

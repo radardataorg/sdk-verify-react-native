@@ -1,0 +1,101 @@
+# ============================================================================
+# CI/CD do @radardata/verify-react-native. Publica no npmjs por TAG (vX.Y.Z).
+#
+# Variáveis (Settings → CI/CD → Variables, masked + protected):
+#   NPM_TOKEN   token de AUTOMAÇÃO do npmjs (Access Tokens → Generate → Automation)
+#
+# Use token de AUTOMAÇÃO, não "Publish" clássico: se a conta ou a organização
+# exigir 2FA para publicar, só o de automação passa sem pedir o código, e a
+# pipeline não tem onde digitar código nenhum.
+#
+# O escopo `@radardata` tem de existir no npmjs e ser nosso (organização ou
+# usuário com esse nome) ANTES do primeiro publish.
+# ============================================================================
+stages: [test, espelhar, publicar]
+
+default:
+  image: node:20-alpine
+  before_script: [npm ci]
+
+teste:
+  stage: test
+  script:
+    - npm run typecheck
+    - npm test
+    - npm run build
+    # NAO ha teste de aparelho aqui, e isso e limite real e nao esquecimento:
+    # o componente usa WebView com camera, e iOS nem compila em runner Linux.
+    # A validacao em aparelho e manual, com Mac e dois telefones.
+  rules:
+    - if: '$CI_COMMIT_TAG'
+    - if: '$CI_COMMIT_BRANCH'
+
+# O GitLab e DESENVOLVIMENTO e e privado; o GitHub e a vitrine publica. Este
+# job existe para o codigo do pacote ter uma casa publica onde o cliente possa
+# ler o que instalou, ja que o grupo do GitLab e privado e la um projeto nao
+# pode ser mais visivel que o grupo.
+#
+# Variaveis: GITHUB_DEPLOY_KEY_B64 (chave privada da deploy key, em base64, para
+# poder ir masked) e GITHUB_REPO (owner/repo). Deploy key e nao PAT: escrita em
+# UM repositorio so, sem validade para expirar, sem alcance no resto da conta.
+espelhar-no-github:
+  stage: espelhar
+  image: alpine:3.20
+  variables:
+    # Clone COMPLETO: o padrao do GitLab e raso, e repositorio raso nao se
+    # empurra ("shallow update not allowed").
+    GIT_DEPTH: 0
+  before_script:
+    - apk add --no-cache git openssh-client >/dev/null
+  script:
+    - |
+      test -n "$GITHUB_DEPLOY_KEY_B64" || { echo "ERRO: GITHUB_DEPLOY_KEY_B64 nao configurado."; exit 1; }
+      test -n "$GITHUB_REPO" || { echo "ERRO: GITHUB_REPO nao configurado (owner/repo)."; exit 1; }
+    - |
+      mkdir -p ~/.ssh && chmod 700 ~/.ssh
+      echo "$GITHUB_DEPLOY_KEY_B64" | base64 -d > ~/.ssh/id_ed25519
+      chmod 600 ~/.ssh/id_ed25519
+      ssh-keyscan -t ed25519 github.com >> ~/.ssh/known_hosts 2>/dev/null
+    # Empurra `main` e a tag, e NADA MAIS. O GitLab e privado e pode ter branch
+    # de experimento; espelhar tudo publicaria trabalho que ninguem decidiu
+    # publicar.
+    - git fetch origin main --quiet
+    - git push "git@github.com:${GITHUB_REPO}.git" "origin/main:refs/heads/main"
+    - git push "git@github.com:${GITHUB_REPO}.git" "refs/tags/${CI_COMMIT_TAG}"
+    - echo "Espelhado em https://github.com/${GITHUB_REPO} na tag ${CI_COMMIT_TAG}"
+  rules:
+    - if: '$CI_COMMIT_TAG'
+
+publicar:
+  stage: publicar
+  script:
+    # A TAG MANDA, e o `package.json` tem de concordar.
+    #
+    # O npm publica o que está no `package.json`, e não o que está na tag. Sem
+    # esta conferência, taguear v1.1.1 com o arquivo em 1.1.0 republica 1.1.0
+    # (ou falha dizendo que já existe), e versão publicada no npm NÃO se apaga:
+    # dá para descontinuar, não para apagar.
+    - |
+      esperada="${CI_COMMIT_TAG#v}"
+      noArquivo=$(node -p "require('./package.json').version")
+      if [ "$esperada" != "$noArquivo" ]; then
+        echo "ERRO: a tag diz $esperada e o package.json diz $noArquivo."
+        echo "Acerte a versão no package.json, faça o commit e tagueie de novo."
+        exit 1
+      fi
+      echo "Tag e package.json concordam em $noArquivo."
+    # Pre-lancamento funciona, e a regra e a mesma: para taguear v1.2.0-beta.1 o
+    # `package.json` tem de dizer 1.2.0-beta.1. A guarda acima vai barrar se
+    # nao disser, e isso e proposital.
+    - |
+      test -n "$NPM_TOKEN" || { echo "ERRO: NPM_TOKEN não configurado."; exit 1; }
+    - npm run build
+    - echo "//registry.npmjs.org/:_authToken=${NPM_TOKEN}" > ~/.npmrc
+    # `--access public`: pacote com escopo nasce RESTRITO no npm, e sem esta
+    # linha o primeiro publish falha (ou publica privado, pior).
+    - npm publish --access public --provenance=false
+    - echo "Publicado. Confira em https://www.npmjs.com/package/@radardata/verify-react-native"
+  after_script:
+    - rm -f ~/.npmrc
+  rules:
+    - if: '$CI_COMMIT_TAG'
