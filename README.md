@@ -17,8 +17,9 @@ Nesta versão **todos os passos rodam em WebView**, inclusive a prova de vida:
 | Documento | **WebView** |
 | Consentimento, campos, sócio, apontamentos | **WebView** |
 
-O fluxo **funciona de ponta a ponta** em iOS e Android, porque o WebView
-carrega o fluxo de verdade e pede a câmera.
+O WebView carrega o fluxo de verdade e pede a câmera. No Android isso já foi
+executado em aparelho, com câmera, localização e desfecho. No **iOS ainda não**:
+a configuração está no componente, mas falta a execução em aparelho.
 
 O caminho nativo está **preparado, não pronto**: existe o contrato
 `ProvedorDeProvaDeVida`, e o servidor já devolve o desafio no
@@ -40,12 +41,16 @@ function MinhaVerificacao({ urlDaSessao }: { urlDaSessao: string }) {
           console.log(d.estado.resultado); // APROVADO | REPROVADO | REVISAO_MANUAL
           console.log(d.estado.motivo);    // por que não aprovou, em texto neutro
         }
+        if (d.tipo === "cancelado") console.log("o seu backend cancelou a sessão");
         if (d.tipo === "erro") console.warn(d.erro.message);
       }}
     />
   );
 }
 ```
+
+Há um app completo na pasta `example/` do repositório, com o backend que cria a
+sessão. Ela não vai no pacote do npm.
 
 ## O app não cria a sessão, e isso é de propósito
 
@@ -56,8 +61,10 @@ app recebe só a url (ou o token) dela.
 
 Criar a sessão do app exigiria o **token de API da empresa** dentro do
 aparelho, e token de API em aparelho de usuário final é token vazado: com ele
-dá para gastar o saldo da sua conta. O `VerifyRadarData` aceita tanto a url
-quanto o token, porque quem integra guarda o que recebeu e passa adiante.
+dá para gastar o saldo da sua conta.
+
+O `VerifyRadarData` aceita a url ou o token. Prefira a url, que já traz o domínio
+próprio de quem tem um: só com o token, o fluxo abre no domínio padrão do Verify.
 
 ```ts
 // No SEU backend
@@ -86,6 +93,29 @@ pede. Falta o que só o app pode declarar:
 Sem isso o sistema nega a câmera sem dizer por que, e o sintoma aparece como se
 o fluxo estivesse quebrado.
 
+### Localização
+
+Só se algum fluxo pedir localização, opção do passo de consentimento. Se ela for
+obrigatória e faltar a declaração, a pessoa não consegue avançar.
+
+**iOS**, no `Info.plist`:
+
+```xml
+<key>NSLocationWhenInUseUsageDescription</key>
+<string>Para registrar de onde a verificação foi feita.</string>
+```
+
+**Android**, no `AndroidManifest.xml`:
+
+```xml
+<uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+<uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+```
+
+No Android, o WebView só aceita a localização **exata**. Quem escolhe
+"Aproximada" vê a localização como negada e, ao tentar de novo, o sistema oferece
+a troca para exata.
+
 ## Como o componente sabe que terminou
 
 Ele **pergunta ao servidor**, em intervalo, em vez de espiar a navegação do
@@ -93,9 +123,25 @@ WebView. Depender da url de redirecionamento ou de mensagem da página amarraria
 o pacote ao HTML do runtime, que muda sem aviso; o **estado da sessão é
 contrato**.
 
+Pergunta a cada 5 segundos, uma pergunta por vez. Ajuste com
+`intervaloDeConferenciaMs`, com mínimo de 2 segundos: cada pergunta conta no
+limite de taxa da sessão, que o WebView aberto ao lado também usa.
+
 Falha de rede no meio do caminho não encerra nada: a pessoa pode estar sem
-sinal, e a rodada seguinte tenta de novo. Ajuste com
-`intervaloDeConferenciaMs` se precisar.
+sinal, e a rodada seguinte tenta de novo.
+
+| `onDesfecho` recebe | Quando |
+|---|---|
+| `{ tipo: "concluido", estado }` | a sessão terminou; o resultado está em `estado.resultado` |
+| `{ tipo: "cancelado" }` | o seu backend cancelou a sessão pela API, antes ou durante o fluxo |
+| `{ tipo: "erro", erro }` | a sessão expirou ou não existe (`SessaoInvalida`), ou o fluxo não carregou |
+
+A pessoa não tem como cancelar dentro do fluxo. Se o seu app oferece um botão de
+sair, ele desmonta o componente, e aí não há desfecho: quem saiu foi o app, que
+já sabe disso. A sessão continua aberta no servidor até expirar ou ser
+cancelada pelo seu backend.
+
+O desfecho sai uma vez só por sessão. Trocar a `sessao` recomeça.
 
 ## Erros
 
@@ -106,6 +152,19 @@ sinal, e a rodada seguinte tenta de novo. Ajuste com
 | `BiometriaIndisponivel` | biometria fora do ar do nosso lado |
 | `FalhaDeRede` | sem resposta: timeout, DNS, sem sinal |
 | `ErroVerify` | raiz de todas, com `.codigo`, `.status` e `.corpo` |
+
+## Só o núcleo, sem React Native
+
+O índice do pacote exporta o componente, que importa `react-native`, e isso só
+carrega no Metro. Para usar o núcleo em Node, num teste do seu backend ou para
+orquestrar a sessão sem tela, importe o subcaminho:
+
+```ts
+import { Runtime, Orquestrador, SessaoInvalida } from "@radardata/verify-react-native/nucleo";
+```
+
+Ele traz `Runtime`, `Orquestrador`, os erros, os tipos e `semProvedorNativo`, e
+não toca em `react-native`.
 
 ## Quem decide a aprovação
 
@@ -144,8 +203,9 @@ npm run build
 ```
 
 Os testes cobrem a decisão (o que é nativo, o que é WebView, em que ordem a
-prova de vida acontece) e não o componente de tela, que precisa de React Native
-em execução.
+prova de vida acontece) e o ciclo de requisições do componente, com o React
+Native trocado por nomes: quantas perguntas saem, quando param e quantos
+desfechos chegam. A tela de verdade só se vê no app de `example/`.
 
 ## Licença
 

@@ -5,7 +5,19 @@ import { type ProvedorDeProvaDeVida, semProvedorNativo } from "./nativo/provedor
 import { ErroVerify } from "./nucleo/erros.js";
 import { Orquestrador } from "./nucleo/orquestrador.js";
 import { Runtime, tokenDaUrl } from "./nucleo/runtime.js";
-import { type Desfecho, type EstadoSessao, terminou } from "./nucleo/tipos.js";
+import type { Desfecho, EstadoSessao } from "./nucleo/tipos.js";
+
+/**
+ * De quanto em quanto tempo o componente pergunta se a sessao acabou.
+ *
+ * Cada pergunta e um acesso registrado na auditoria da sessao e conta no limite
+ * de taxa do runtime, que o WebView aberto ao lado tambem usa. Cinco segundos
+ * custam metade dos 2,5 s da 0.1.1, e a pessoa ja ve o resultado na propria
+ * pagina enquanto o app nao fica sabendo.
+ */
+const INTERVALO_PADRAO_MS = 5000;
+/** Abaixo disto o polling disputa o limite de taxa com o proprio fluxo. */
+const INTERVALO_MINIMO_MS = 2000;
 
 export interface PropsVerify {
   /**
@@ -21,7 +33,7 @@ export interface PropsVerify {
   base?: string;
   /** Prova de vida nativa. Sem ela, o fluxo todo roda no WebView. */
   provedorDeProvaDeVida?: ProvedorDeProvaDeVida;
-  /** De quanto em quanto tempo perguntar ao servidor se acabou, em ms. */
+  /** De quanto em quanto tempo perguntar ao servidor se acabou, em ms. Padrao 5000, minimo 2000. */
   intervaloDeConferenciaMs?: number;
   onDesfecho: (desfecho: Desfecho) => void;
   /** Chamado a cada mudanca de estado, para o app acompanhar sem decidir. */
@@ -45,90 +57,136 @@ export function VerifyRadarData({
   sessao,
   base,
   provedorDeProvaDeVida = semProvedorNativo,
-  intervaloDeConferenciaMs = 2500,
+  intervaloDeConferenciaMs = INTERVALO_PADRAO_MS,
   onDesfecho,
   onEstado,
 }: PropsVerify) {
+  // Os callbacks e o provedor ficam em ref para nao serem dependencia dos
+  // efeitos abaixo. Funcao ou objeto inline muda a cada render: com eles na
+  // dependencia, um onEstado que guarda estado reabria a sessao a cada resposta,
+  // num laco contra o servidor que so acabava no 429.
+  const aoDesfecho = useRef(onDesfecho);
+  const aoEstado = useRef(onEstado);
+  const provedor = useRef(provedorDeProvaDeVida);
+  useEffect(() => {
+    aoDesfecho.current = onDesfecho;
+    aoEstado.current = onEstado;
+    provedor.current = provedorDeProvaDeVida;
+  });
+
   const token = useMemo(() => tokenDaUrl(sessao), [sessao]);
-  const runtime = useMemo(() => new Runtime(token, base ? { base } : {}), [token, base]);
-  const orquestrador = useMemo(() => new Orquestrador(runtime, provedorDeProvaDeVida), [runtime, provedorDeProvaDeVida]);
+  // Sessao vazia faz o Runtime recusar. Isso vira desfecho de erro, e nao
+  // excecao no render, que derrubaria a tela de quem integrou.
+  const orquestrador = useMemo(() => {
+    try {
+      return new Orquestrador(new Runtime(token, base ? { base } : {}), {
+        disponivel: () => provedor.current.disponivel(),
+        executar: (desafio) => provedor.current.executar(desafio),
+      });
+    } catch (e) {
+      return e instanceof Error ? e : new ErroVerify(String(e));
+    }
+  }, [token, base]);
+  const intervalo = Number.isFinite(intervaloDeConferenciaMs)
+    ? Math.max(INTERVALO_MINIMO_MS, intervaloDeConferenciaMs)
+    : INTERVALO_PADRAO_MS;
 
   const [url, setUrl] = useState<string | null>(null);
-  const [carregando, setCarregando] = useState(true);
   const encerrado = useRef(false);
+  // A sessao cujo desfecho ja saiu. Trocar `base` com a mesma sessao reabre o
+  // fluxo, mas nao pode entregar um segundo desfecho.
+  const sessaoAberta = useRef<string | null>(null);
 
-  const encerrar = useCallback(
-    (d: Desfecho) => {
-      if (encerrado.current) return;
-      encerrado.current = true;
-      onDesfecho(d);
-    },
-    [onDesfecho],
-  );
+  const encerrar = useCallback((d: Desfecho) => {
+    if (encerrado.current) return;
+    encerrado.current = true;
+    aoDesfecho.current(d);
+  }, []);
 
   // Abre o fluxo e decide, no primeiro estado, se da para fazer nativo.
   useEffect(() => {
     let vivo = true;
+    if (sessaoAberta.current !== token) {
+      sessaoAberta.current = token;
+      encerrado.current = false;
+    }
+    setUrl(null);
+
+    if (!(orquestrador instanceof Orquestrador)) {
+      encerrar({ tipo: "erro", erro: orquestrador });
+      return;
+    }
 
     (async () => {
       try {
         const estado = await orquestrador.estado();
         if (!vivo) return;
-        onEstado?.(estado);
+        aoEstado.current?.(estado);
 
-        if (terminou(estado)) {
-          encerrar({ tipo: "concluido", estado });
-          return;
-        }
+        const acabou = Orquestrador.desfechoDoEstado(estado);
+        if (acabou) return encerrar(acabou);
 
-        if (await orquestrador.rodaNativo(estado)) {
+        const nativo = await orquestrador.rodaNativo(estado);
+        if (!vivo) return;
+        if (nativo) {
           const depois = await orquestrador.provaDeVidaNativa();
           if (!vivo) return;
-          onEstado?.(depois);
+          aoEstado.current?.(depois);
 
-          if (terminou(depois)) {
-            encerrar({ tipo: "concluido", estado: depois });
-            return;
-          }
+          const acabouDepois = Orquestrador.desfechoDoEstado(depois);
+          if (acabouDepois) return encerrar(acabouDepois);
         }
 
         // Sobrou passo que este pacote nao roda nativo: WebView.
-        if (vivo) {
-          setUrl(sessao.includes("/") ? sessao : null);
-          setCarregando(false);
-        }
+        if (vivo) setUrl(orquestrador.urlDoFluxo(sessao));
       } catch (e) {
-        if (vivo) encerrar({ tipo: "erro", erro: e instanceof Error ? e : new ErroVerify(String(e)) });
+        if (vivo) encerrar(Orquestrador.desfechoDoErro(e));
       }
     })();
 
     return () => {
       vivo = false;
     };
-  }, [orquestrador, sessao, encerrar, onEstado]);
+  }, [orquestrador, token, sessao, encerrar]);
 
   // Pergunta ao servidor se terminou. E o contrato, e nao o HTML da pagina.
+  // Uma pergunta por vez: a proxima so e agendada quando a anterior volta, para
+  // rede lenta nao empilhar requisicoes.
   useEffect(() => {
-    if (url === null) return;
+    if (url === null || !(orquestrador instanceof Orquestrador)) return;
 
-    const relogio = setInterval(async () => {
-      try {
-        const estado = await runtime.bootstrap();
-        onEstado?.(estado);
-        if (terminou(estado)) {
-          clearInterval(relogio);
-          encerrar({ tipo: "concluido", estado });
+    let vivo = true;
+    let relogio: ReturnType<typeof setTimeout> | undefined;
+
+    const rodada = async () => {
+      const { estado, desfecho } = await orquestrador.conferir();
+      // A pessoa pode ter saido, ou o fluxo encerrado, enquanto a resposta vinha.
+      if (!vivo || encerrado.current) return;
+
+      if (estado) {
+        try {
+          aoEstado.current?.(estado);
+        } catch (e) {
+          // Erro no onEstado do app nao pode parar a conferencia em silencio:
+          // sobe fora daqui, onde o app ve, e a rodada segue.
+          setTimeout(() => {
+            throw e;
+          });
         }
-      } catch {
-        // Falha de rede no meio do fluxo nao encerra nada: a pessoa pode
-        // estar no elevador. A proxima rodada tenta de novo.
       }
-    }, intervaloDeConferenciaMs);
+      if (desfecho) return encerrar(desfecho);
 
-    return () => clearInterval(relogio);
-  }, [url, runtime, intervaloDeConferenciaMs, encerrar, onEstado]);
+      relogio = setTimeout(rodada, intervalo);
+    };
+    relogio = setTimeout(rodada, intervalo);
 
-  if (carregando || url === null) {
+    return () => {
+      vivo = false;
+      clearTimeout(relogio);
+    };
+  }, [url, orquestrador, intervalo, encerrar]);
+
+  if (url === null) {
     return (
       <View style={estilos.centro}>
         <ActivityIndicator />
@@ -140,11 +198,14 @@ export function VerifyRadarData({
     <WebView
       source={{ uri: url }}
       style={estilos.cheio}
-      // A prova de vida precisa da camera, e sem estes tres o WebView a nega
-      // sem dizer por que, o que parece defeito do fluxo.
+      // A prova de vida precisa da camera, e sem estes o WebView a nega sem dizer
+      // por que, o que parece defeito do fluxo. No Android quem concede e o proprio
+      // react-native-webview; o grant type vale so para o iOS.
       mediaPlaybackRequiresUserAction={false}
       allowsInlineMediaPlayback
-      onPermissionRequest={(evento: { nativeEvent: { grant: () => void } }) => evento.nativeEvent.grant()}
+      mediaCapturePermissionGrantType="grantIfSameHostElsePrompt"
+      // Fluxo com localizacao pede por aqui, e desligado o Android nega sem perguntar.
+      geolocationEnabled
       // Alguns aparelhos Android recusam `getUserMedia` sem isto.
       javaScriptEnabled
       domStorageEnabled

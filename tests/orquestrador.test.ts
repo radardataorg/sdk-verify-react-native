@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { ProvedorDeProvaDeVida } from "../src/nativo/provedor.js";
 import { PassoForaDeOrdem, SessaoInvalida } from "../src/nucleo/erros.js";
 import { Orquestrador } from "../src/nucleo/orquestrador.js";
-import { Runtime, tokenDaUrl } from "../src/nucleo/runtime.js";
+import { Runtime, tokenDaUrl, urlDaSessao } from "../src/nucleo/runtime.js";
 import { terminou } from "../src/nucleo/tipos.js";
 
 /**
@@ -131,6 +131,71 @@ describe("prova de vida nativa", () => {
     // Sem traduzir nem filtrar: o contrato e entre o servidor e a
     // implementacao nativa, e o SDK no meio nao deve ter opiniao sobre os campos.
     expect(provedor.executar).toHaveBeenCalledWith({ session_id: "des-2", desafio: "movimento" });
+  });
+});
+
+describe("conferir se a sessao acabou", () => {
+  const conferir = (r: () => Response | Error) => {
+    const { runtime } = runtimeFalso([r]);
+    return new Orquestrador(runtime, nativoAusente()).conferir();
+  };
+
+  it("em andamento, informa o estado e nao encerra", async () => {
+    const { estado, desfecho } = await conferir(json(bootstrap("document")));
+
+    expect(estado?.etapaAtual).toBe("document");
+    expect(desfecho).toBeNull();
+  });
+
+  it("concluida, entrega o desfecho", async () => {
+    const { desfecho } = await conferir(json(bootstrap(null, "completed")));
+
+    expect(desfecho?.tipo).toBe("concluido");
+  });
+
+  const encerrada = (status?: string) =>
+    json({ error: { code: "sessao_encerrada", message: "acabou", ...(status ? { status } : {}) } }, 410);
+
+  it("expirada no meio do fluxo encerra com erro, em vez de consultar para sempre", async () => {
+    for (const r of [encerrada("expired"), encerrada()]) {
+      const { desfecho } = await conferir(r);
+
+      expect(desfecho?.tipo).toBe("erro");
+      expect(desfecho?.tipo === "erro" && desfecho.erro).toBeInstanceOf(SessaoInvalida);
+    }
+  });
+
+  it("cancelada pelo backend de quem integra encerra como cancelado, nao como erro", async () => {
+    const { desfecho } = await conferir(encerrada("canceled"));
+
+    expect(desfecho).toEqual({ tipo: "cancelado" });
+  });
+
+  it("sessao inexistente continua erro, mesmo com status no corpo", async () => {
+    const { desfecho } = await conferir(json({ error: { message: "nao achei", status: "canceled" } }, 404));
+
+    expect(desfecho?.tipo).toBe("erro");
+  });
+
+  it("estado cancelado vira cancelado; expirado com 200 encerra como concluido", async () => {
+    expect((await conferir(json(bootstrap(null, "canceled")))).desfecho).toEqual({ tipo: "cancelado" });
+    expect((await conferir(json(bootstrap(null, "expired")))).desfecho?.tipo).toBe("concluido");
+  });
+
+  it("falha de rede e erro do servidor nao encerram: a proxima rodada tenta de novo", async () => {
+    for (const r of [() => new Error("sem sinal"), json({}, 500), json({}, 429)]) {
+      expect(await conferir(r)).toEqual({ estado: null, desfecho: null });
+    }
+  });
+});
+
+describe("pagina do fluxo", () => {
+  it("url vale como veio, para nao perder o dominio proprio do cliente", () => {
+    expect(urlDaSessao(" https://kyc.cliente.com/s/abc123 ")).toBe("https://kyc.cliente.com/s/abc123");
+  });
+
+  it("token sozinho abre no dominio padrao, em vez de carregar para sempre", () => {
+    expect(urlDaSessao("abc123")).toBe("https://verify.radardata.com.br/s/abc123");
   });
 });
 

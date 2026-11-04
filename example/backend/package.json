@@ -1,0 +1,15 @@
+{
+  "name": "radardata-verify-exemplo-backend",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "adb reverse tcp:8799 tcp:8799; node --env-file=.env servidor.mjs"
+  },
+  "dependencies": {
+    "@radardata/sdk": "0.1.0"
+  },
+  "engines": {
+    "node": ">= 20.6.0"
+  }
+}

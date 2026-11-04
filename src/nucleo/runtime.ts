@@ -132,3 +132,14 @@ export function tokenDaUrl(urlOuToken: string): string {
   const partes = limpo.replace(/[?#].*$/, "").split("/").filter(Boolean);
   return partes[partes.length - 1] ?? "";
 }
+
+/**
+ * A pagina do fluxo a partir do que o seu backend devolveu.
+ *
+ * A url vale como veio, porque ela ja traz o dominio proprio de quem tem um. O
+ * token sozinho nao diz o dominio, entao abre no padrao, que atende toda sessao.
+ */
+export function urlDaSessao(urlOuToken: string): string {
+  const limpo = urlOuToken.trim();
+  return limpo.includes("/") ? limpo : `https://verify.radardata.com.br/s/${limpo}`;
+}

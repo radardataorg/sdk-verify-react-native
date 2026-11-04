@@ -1,6 +1,7 @@
 import type { ProvedorDeProvaDeVida } from "../nativo/provedor.js";
-import { Runtime } from "./runtime.js";
-import { type EstadoSessao, type TipoPasso, terminou } from "./tipos.js";
+import { ErroVerify, SessaoInvalida } from "./erros.js";
+import { Runtime, urlDaSessao } from "./runtime.js";
+import { type Desfecho, type EstadoSessao, type TipoPasso, terminou } from "./tipos.js";
 
 /**
  * Decide, passo a passo, o que roda NATIVO e o que cai no WEBVIEW.
@@ -56,8 +57,52 @@ export class Orquestrador {
     return this.runtime.livenessResultado();
   }
 
-  /** A url que o WebView deve abrir para continuar de onde esta. */
-  urlDoFluxo(urlDaSessao: string): string {
-    return urlDaSessao;
+  /**
+   * Pergunta ao servidor se acabou, e diz o desfecho quando acabar.
+   *
+   * Falha de rede nao encerra nada: a pessoa pode estar no elevador, e a
+   * proxima rodada tenta de novo. Sessao que expirou ou foi cancelada e outra
+   * coisa: o servidor responde 410, e repetir nunca vai mudar a resposta.
+   */
+  async conferir(): Promise<{ estado: EstadoSessao | null; desfecho: Desfecho | null }> {
+    try {
+      const estado = await this.runtime.bootstrap();
+      return { estado, desfecho: Orquestrador.desfechoDoEstado(estado) };
+    } catch (e) {
+      if (e instanceof SessaoInvalida) return { estado: null, desfecho: Orquestrador.desfechoDoErro(e) };
+      return { estado: null, desfecho: null };
+    }
   }
+
+  /** O desfecho de um estado, ou null enquanto a sessao esta aberta. */
+  static desfechoDoEstado(estado: EstadoSessao): Desfecho | null {
+    if (!terminou(estado)) return null;
+    if (estado.status === "canceled") return { tipo: "cancelado" };
+    return { tipo: "concluido", estado };
+  }
+
+  /**
+   * O desfecho de um erro que encerra o fluxo.
+   *
+   * A pessoa nao tem como cancelar dentro do fluxo: quem cancela e o backend de
+   * quem integra, pela API. Isso nao e falha, e por isso vira `cancelado` e nao
+   * `erro`. O servidor diz qual foi no corpo do 410; expirada continua erro,
+   * porque ali o app precisa pedir uma sessao nova.
+   */
+  static desfechoDoErro(e: unknown): Desfecho {
+    if (e instanceof SessaoInvalida && e.status === 410 && statusNoCorpo(e.corpo) === "canceled") {
+      return { tipo: "cancelado" };
+    }
+    return { tipo: "erro", erro: e instanceof Error ? e : new ErroVerify(String(e)) };
+  }
+
+  /** A url que o WebView deve abrir para continuar de onde esta. */
+  urlDoFluxo(urlOuToken: string): string {
+    return urlDaSessao(urlOuToken);
+  }
+}
+
+function statusNoCorpo(corpo: Record<string, unknown>): unknown {
+  const erro = corpo.error;
+  return erro && typeof erro === "object" ? (erro as Record<string, unknown>).status : undefined;
 }

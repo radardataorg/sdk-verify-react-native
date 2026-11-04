@@ -1,0 +1,8 @@
+{
+  "name": "@radardata/verify-react-native/nucleo",
+  "private": true,
+  "main": "../dist/cjs/nucleo/index.js",
+  "module": "../dist/esm/nucleo/index.js",
+  "react-native": "../dist/esm/nucleo/index.js",
+  "types": "../dist/cjs/nucleo/index.d.ts"
+}
