@@ -216,3 +216,31 @@ describe("erros do runtime", () => {
     await expect(runtime.livenessStart()).rejects.toBeInstanceOf(PassoForaDeOrdem);
   });
 });
+
+describe("0.1.3", () => {
+  it("sessao failed termina, em vez de conferir para sempre", async () => {
+    const { runtime } = runtimeFalso([json({ ...bootstrap(null, "failed"), outcome: "REPROVADO", motivo: "Tentativas esgotadas" })]);
+    const o = new Orquestrador(runtime, { disponivel: async () => false, executar: async () => undefined });
+
+    const { desfecho } = await o.conferir();
+    expect(desfecho?.tipo).toBe("concluido");
+    expect(terminou({ ...bootstrap(null, "failed"), status: "failed" } as never)).toBe(true);
+  });
+
+  it("prova de vida nativa devolve o session_id do desafio", async () => {
+    const corpos: unknown[] = [];
+    const runtime = new Runtime("tok", {
+      base: "https://api.exemplo/api",
+      fetch: (async (url: string | URL | Request, init?: RequestInit) => {
+        corpos.push(init?.body ? JSON.parse(String(init.body)) : null);
+        return String(url).endsWith("/liveness/start")
+          ? new Response(JSON.stringify({ session_id: "liv-9" }), { status: 200 })
+          : new Response(JSON.stringify(bootstrap("consent")), { status: 200 });
+      }) as typeof globalThis.fetch,
+    });
+    const o = new Orquestrador(runtime, { disponivel: async () => true, executar: async () => undefined });
+
+    await o.provaDeVidaNativa();
+    expect(corpos.at(-1)).toEqual({ session_id: "liv-9" });
+  });
+});

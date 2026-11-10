@@ -25,7 +25,7 @@ export interface Passo {
 /** O estado da sessao, como o runtime o descreve. */
 export interface EstadoSessao {
   readonly sessionId: string;
-  /** pending, in_progress, completed, expired, canceled. */
+  /** pending, in_progress, completed, failed, expired, canceled. */
   readonly status: string;
   /** O passo em que a sessao esta, ou null quando acabou. */
   readonly etapaAtual: string | null;
@@ -60,7 +60,11 @@ export function paraEstado(d: Record<string, unknown>): EstadoSessao {
   };
 }
 
-/** Acabou, de qualquer jeito: nao ha mais o que a pessoa possa fazer. */
+/**
+ * Acabou, de qualquer jeito: nao ha mais o que a pessoa possa fazer. `failed` e a sessao que o
+ * servidor encerrou sem aprovar (tentativas de prova de vida esgotadas, por exemplo): ela nunca
+ * vira `expired`, e ate a 0.1.2 o componente ficava conferindo para sempre sem desfecho.
+ */
 export function terminou(estado: EstadoSessao): boolean {
-  return ["completed", "expired", "canceled"].includes(estado.status);
+  return ["completed", "failed", "expired", "canceled"].includes(estado.status);
 }

@@ -54,7 +54,7 @@ export class Orquestrador {
     const desafio = await this.runtime.livenessStart();
     await this.provedorNativo.executar(desafio);
 
-    return this.runtime.livenessResultado();
+    return this.runtime.livenessResultado(String(desafio.session_id ?? ""));
   }
 
   /**

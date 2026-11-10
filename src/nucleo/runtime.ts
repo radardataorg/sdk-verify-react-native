@@ -47,8 +47,9 @@ export class Runtime {
    * O app nao decide nada, e isso e de proposito: quem decide aprovacao de
    * biometria no aparelho do usuario final nao decide nada, decide o usuario.
    */
-  async livenessResultado(): Promise<EstadoSessao> {
-    return paraEstado(await this.pedir("POST", "liveness/result"));
+  async livenessResultado(sessionId: string): Promise<EstadoSessao> {
+    // O servidor confere que o resultado e do desafio que ele mesmo criou.
+    return paraEstado(await this.pedir("POST", "liveness/result", { session_id: sessionId }));
   }
 
   async consentimento(aceito = true): Promise<EstadoSessao> {

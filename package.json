@@ -1,6 +1,6 @@
 {
   "name": "@radardata/verify-react-native",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "RadarData Verify dentro do seu app React Native: prova de vida e coleta de dados, com fallback em WebView.",
   "license": "MIT",
   "homepage": "https://radardata.com.br",
